@@ -50,31 +50,33 @@ rd = random.Random(int(time.time()))
 ]
 
 
-融合识别缩写 = {}
-def 融合识别(s: str) -> str:
-    sp = s.split('.')[:3]
-    for ss in sp:
-        if ss == 'model':
-            融合识别缩写[ss] = 'M'
-        else:
-            融合识别缩写[ss] = ss[0]
-    assert len(融合识别缩写.values()) == len(set(融合识别缩写.values()))
-    blocks = ''.join([融合识别缩写[i] for i in sp])
-    n = int(s.split('.')[3])
-    return f'{blocks}#{n//2}'
+def 融合识别(s: str, p: int = 4) -> str:
+    nm = {
+        'x': 'model.diffusion_model.input_blocks.',
+        'y': 'model.diffusion_model.middle_block.',
+        'z': 'model.diffusion_model.output_blocks.',
+    }
+    for k, v in nm.items():
+        if s.startswith(v):
+            n = int(s.removeprefix(v).split('.')[0])
+            return f'{k}_{n//p}'
+    return 'r'
 
 
 def 烙(**kw):
     新模型 = {}
     for k in 所有层:
-        if k not in 好层:
-            新模型[k] = a[k]
-        else:
-            新模型[k] = a[k].astype(np.float32) * (1 - kw[融合识别(k)]) + b[k].astype(np.float32) * kw[融合识别(k)]
+        识别k = 融合识别(k)
+        aw = 1
+        for i, _ in enumerate(其他模型):
+            aw -= kw[f'{i}_{识别k}']
+        新模型[k] = a[k].astype(np.float32) * aw
+        for i, b in enumerate(其他模型):
+            新模型[k] += b[k].astype(np.float32) * kw[f'{i}_{识别k}']
     文件名 = 名字(kw)
     save_file(新模型, f'{模型文件夹}/{文件名}.safetensors')
     上网(f'{服务器地址}/sdapi/v1/refresh-checkpoints', method='post')
-    结果 = 评测模型(文件名, 'blessed2.vae.safetensors', 32, n_iter=100, use_tqdm=False, savedata=False, seed=random.randint(1000, 9000), tags_seed=random.randint(1000, 9000), 计算相似度=False)
+    结果 = 评测模型(文件名, 'blessed2.vae.safetensors', 32, n_iter=80, use_tqdm=False, savedata=False, seed=seed, tags_seed=tags_seed, 计算相似度=False)
     m = []
     for dd in 结果:
         m.extend(dd['分数'])
@@ -86,7 +88,7 @@ def 烙(**kw):
     })
     print(文件名, acc, mm.shape)
     with open(记录文件名, 'w', encoding='utf8') as f:
-        json.dump(记录, f, indent=2)
+        json.dump(记录, f, indent=2, ensure_ascii=False)
     return acc
 
 
@@ -105,29 +107,43 @@ for i in range(100):
     当前标记 = f'{标记}_{i}'
     记录文件名 = f'记录_烙印剧城_{当前标记}_{int(time.time())}.txt'
     记录 = []
-    b名 = rd.choice(所有模型)
-    print('融合', 当前模型, b名)
-    a = load_file(f'{模型文件夹}/{当前模型}.safetensors')
-    b = load_file(f'{模型文件夹}/{rd.choice(所有模型)}.safetensors')
+    其他模型名 = rd.sample(所有模型, 3)
 
-    所有层 = set(a) & set(b)
-    好层 = {i for i in 所有层 if i.startswith('model.diffusion_model.input_blocks.') or i.startswith('model.diffusion_model.middle_block.') or i.startswith('model.diffusion_model.output_blocks.')}
-    好层识别 = {融合识别(i) for i in 好层}
-    print('好层识别为:', 好层识别)
+    记录.append(['融合', 当前模型, 其他模型名])
+    print('融合', 当前模型, 其他模型名)
+
+    a = load_file(f'{模型文件夹}/{当前模型}.safetensors')
+    其他模型 = [load_file(f'{模型文件夹}/{i}.safetensors') for i in 其他模型名]
+
+    所有层 = set(a)
+    for b in 其他模型:
+        所有层 &= set(b)
+
+    识别结果 = {融合识别(i) for i in 所有层}
+
+    所有参数 = []
+    for i, b in enumerate(其他模型):
+        for j in 识别结果:
+            所有参数.append(f'{i}_{j}')
+
+    print('所有参数为:', 所有参数)
 
     optimizer = BayesianOptimization(
         f=烙,
-        pbounds={i: (-0.05, 0.25) for i in 好层识别},
+        pbounds={i: (-0.2, 0.4) for i in 所有参数},
         random_state=666,
     )
 
+    seed = rd.randint(1000, 9000)
+    tags_seed=random.randint(1000, 9000)
+
     optimizer.probe(
-        params={i: 0 for i in 好层识别},
+        params={i: 0 for i in 所有参数},
     )
 
     optimizer.maximize(
         init_points=4,
-        n_iter=25,
+        n_iter=35,
     )
 
     当前模型 = 名字(optimizer.max['params'])
