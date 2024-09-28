@@ -1,80 +1,48 @@
 import os
-import sys
 import json
 import time
 import random
 import hashlib
-from collections import Counter
 
+import torch
 import numpy as np
 from bayes_opt import BayesianOptimization
 from safetensors import safe_open
 from safetensors.numpy import load_file, save_file
 
-sys.path.append('R:/stable-diffusion-anime-tag-benchmark')
-from common import 上网, 服务器地址
-from 评测多标签 import 评测模型
+from benchmarker.评测多标签改 import 评测模型
+from tqdm import tqdm
+
+from prometheus_client import start_http_server, Gauge
 
 
-from safetensors.numpy import load_file, save_file
-import numpy as np
-
-
+start_http_server(10721)
 rd = random.Random(int(time.time()))
+acc打点 = Gauge('acc', 'acc')
 
 
 模型文件夹 = 'R:/stable-diffusion-webui-master/models/Stable-diffusion'
 
 
-# size = 512
-# vae = 'blessed2.vae.safetensors'
-# 所有模型 = [
-#     'AOM3A1',
-#     'Counterfeit-V2.2',
-#     'Counterfeit-V3.0_fp16',
-#     'anyloraCheckpoint_novaeFp16',
-#     'bluePencil_v10',
-#     'calicomix_v75',
-#     'cetusMix_v4',
-#     'cuteyukimixAdorable_specialchapter',
-#     'sweetMix_v22Flat',
-#     'petitcutie_v15',
-#     'kaywaii_v70',
-#     'kaywaii_v90',
-#     'superInvincibleAnd_v2',
-#     'sakuramochimix_v10',
-#     'sweetfruit_melon.safetensors_v1.0',
-#     'AnythingV5Ink_ink',
-#     'rabbit_v7',
-#     'rainbowsweets_v20',
-#     'himawarimix_v100',
-#     'koji_v21',
-#     'yetanotheranimemodel_v20',
-#     'irismix_v90',
-#     'theWondermix_v12',
-# ]
-# 融合模型个数 = 3
-# 当前模型 = 'rimochan_random_mix_3.2'
-# n_iter = 35
-
-
-# XL用
-size = 576
 vae = 'sdxl_vae_0.9.safetensors'
 所有模型 = [
+    'aingdiffusionXL_v11',
+    'animagineXLV3_v30',
+    'aniease_v24',
+    'animeIllustDiffusion_v052',
     'counterfeitxl_v25',
-    'aingdiffusionXL_v06',
+    'himawarimix_xlV13',
     'reproductionSDXL_2v12',
     'kohakuXLBeta_beta7',
-    'baxlBartstylexlBlueArchiveFlatCelluloid_xlv2',
     'kohakuXLDelta_rev1',
+    'baxlBartstylexlBlueArchiveFlatCelluloid_xlv2',
 ]
-融合模型个数 = 2
-当前模型 = 'ConfusionXL2.0'
-n_iter = 26
+融合模型个数 = 3
+n_iter = 44
+当前模型 = 'aniease_v24'
 
 
-def 融合识别(s: str, p: int = 4) -> str:
+def 融合识别(s: str) -> str:
     nm = {
         'x': 'model.diffusion_model.input_blocks.',
         'y': 'model.diffusion_model.middle_block.',
@@ -83,7 +51,19 @@ def 融合识别(s: str, p: int = 4) -> str:
     for k, v in nm.items():
         if s.startswith(v):
             n = int(s.removeprefix(v).split('.')[0])
-            return f'{k}_{n//p}'
+            if k == 'x':
+                for z, s in enumerate(((0, 1, 2, 3, 4, 5, 6), (7,), (8,))):
+                    if n in s:
+                        真n = z
+            elif k == 'y':
+                真n = 0
+            elif k == 'z':
+                for z, s in enumerate(((0,), (1,), (2,), (3, 4, 5, 6, 7, 8))):
+                    if n in s:
+                        真n = z
+            else:
+                raise Exception('啊？')
+            return f'{k}_{真n}'
     return 'r'
 
 
@@ -95,16 +75,18 @@ def 烙(**kw):
         aw = 1
         for i, _ in enumerate(其他模型):
             aw -= kw[f'{i}_{识别k}']
-        新模型[k] = a[k].astype(np.float32) * aw
+        新模型[k] = torch.from_numpy(a[k]).cuda().to(torch.float32) * aw
         branded_from[k] = {kk: vv * aw for kk, vv in 原branded_from.get(k, {当前模型: 1}).items()}
         for i, b in enumerate(其他模型):
             bw = kw[f'{i}_{识别k}']
-            新模型[k] += b[k].astype(np.float32) * bw
+            新模型[k] += torch.from_numpy(b[k]).cuda().to(torch.float32) * bw
             branded_from[k][其他模型名[i]] = branded_from[k].get(其他模型名[i], 0) + bw
+        新模型[k] = 新模型[k].to(torch.float16).cpu().numpy()
     文件名 = 名字(kw)
     save_file(新模型, f'{模型文件夹}/{文件名}.safetensors', metadata={'branded_from': json.dumps(branded_from, ensure_ascii=False, default=float)})
-    上网(f'{服务器地址}/sdapi/v1/refresh-checkpoints', method='post')
-    结果 = 评测模型(文件名, vae, 32, n_iter=80, use_tqdm=False, savedata=False, seed=seed, tags_seed=tags_seed, 计算相似度=False, 计算图像质量=False, width=size, height=size)
+    del 新模型
+    生成测试样例 = all([i==0 for i in kw.values()])
+    结果 = 评测模型(文件名, vae, 32, n_iter=100, use_tqdm=True, tags_seed=tags_seed, 生成测试样例=生成测试样例)
     m = []
     tm = []
     for dd in 结果:
@@ -117,10 +99,12 @@ def 烙(**kw):
         '文件名': 文件名,
         'acc': acc,
     })
-    print(文件名, f'acc={acc}', mm.shape)
+    acc打点.set(acc)
+    惩罚 = sum([i for i in kw.values() if i < 0]) * (-0.005)
+    print(文件名, f'acc={acc}', f'惩罚={惩罚}', mm.shape)
     with open(记录文件名, 'w', encoding='utf8') as f:
         json.dump(记录, f, indent=2, ensure_ascii=False)
-    return acc
+    return acc - 惩罚
 
 
 def 名字(kw: dict):
@@ -130,14 +114,17 @@ def 名字(kw: dict):
 
 
 标记 = rd.randint(0, 10000)
-
-
+队 = []
+for i in range(100):
+    t = 所有模型.copy()
+    random.shuffle(t)
+    队 += t
 for i in range(100):
     当前标记 = f'{标记}_{i}'
-    记录文件名 = f'记录_烙印剧城_{当前标记}_{int(time.time())}.txt'
+    记录文件名 = f'记录/记录_烙印剧城_{当前标记}_{int(time.time())}.txt'
     记录 = []
-    其他模型名 = rd.sample(所有模型, 融合模型个数)
-
+    其他模型名 = 队[:融合模型个数]
+    队 = 队[融合模型个数:]
     记录.append(['融合', 当前模型, 其他模型名])
     print('融合', 当前模型, 其他模型名)
 
@@ -160,19 +147,18 @@ for i in range(100):
 
     optimizer = BayesianOptimization(
         f=烙,
-        pbounds={i: (-0.2, 0.6) for i in 所有参数},
+        pbounds={i: (-0.12, 0.5) for i in 所有参数},
         random_state=666,
     )
 
-    seed = rd.randint(1000, 9000)
-    tags_seed = random.randint(1000, 9000)
+    tags_seed = rd.randint(1000, 9000)
 
     optimizer.probe(
         params={i: 0 for i in 所有参数},
     )
 
     optimizer.maximize(
-        init_points=4,
+        init_points=6,
         n_iter=n_iter,
     )
 
